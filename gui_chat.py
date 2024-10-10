@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import tkinter as tk
 from tkinter import scrolledtext
 
@@ -58,12 +59,25 @@ class ChatApp:
         self.animation_running = False
         self.progress_image = None
 
-        self.loop = asyncio.get_event_loop()
-
         # Initialize the orchestrator
-        self.orchestrator = Orchestrator(
-            state_to_agent_map=state_to_agent_map, eval_mode=True
+        orchestrator = Orchestrator(
+            state_to_agent_map=state_to_agent_map,
+            eval_mode=False,
+            update_gui_func=self.update_result_to_gui,  # Pass the function
         )
+        self.orchestrator = orchestrator
+
+        self.loop = asyncio.new_event_loop()
+        self.loop_thread = threading.Thread(target=self.run_asyncio_loop)
+        self.loop_thread.start()
+
+    def run_asyncio_loop(self):
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    def stop_asyncio_loop(self):
+        self.loop.stop()
+        self.loop_thread.join()
 
     def load_progress_image(self):
         try:
@@ -85,28 +99,34 @@ class ChatApp:
         if message:
             self.display_message(message, "User")
             self.user_input.delete(0, tk.END)
-            self.start_agent_thread(message)
 
-    def start_agent_thread(self, message):
-        self.progress_label.pack(fill=tk.X, pady=(5, 0), side=tk.BOTTOM)
-        self.start_animation()
+            # Schedule the coroutine to run within the event loop
+            future = asyncio.run_coroutine_threadsafe(self.run_agent(message), self.loop)
 
-        # Schedule the coroutine to run on the main event loop
-        future = asyncio.run_coroutine_threadsafe(self.run_agent(message), self.loop)
-
-        # Add a callback to handle the result when it's ready
-        future.add_done_callback(
-            lambda f: self.master.after(0, self.process_agent_result, f.result())
-        )
+            # Add a callback to handle the result when it's ready
+            future.add_done_callback(lambda f: self.master.after(
+                0, self.process_agent_result, f.result()
+            ))
 
     async def run_agent(self, message):
-        # Run the agent using the orchestrator
-        result = await self.orchestrator.execute_command(message)
-        self.master.after(0, self.process_agent_result, result)
+        print("run_agent called. ")
+        self.start_animation()
+        self.progress_label.pack(fill=tk.X, pady=(5, 0), side=tk.BOTTOM)
 
-    def process_agent_result(self, result):
-        final_response = result.response
-        self.display_message(final_response, "Agent Q")
+        print("run_agent orchestrator called. ")
+        # Run the agent using the orchestrator
+        result = await self.orchestrator.start(message)
+
+        # Process the result (you might need to adjust this based on your Orchestrator's output)
+        self.process_agent_result(result)
+
+    def update_result_to_gui(self, message):
+        # Ensure the update happens on the main thread
+        self.master.after(0, self.process_agent_result, message)
+
+    async def process_agent_result(self, result):
+        print("process_agent_result called. ")
+        self.display_message(result, "Agent Q")
         self.stop_animation()
         self.progress_label.pack_forget()
 
@@ -136,6 +156,7 @@ class ChatApp:
             self.master.after(50, self.update_animation)  # Update every 50ms
 
 
-root = tk.Tk()
-app = ChatApp(root)
-root.mainloop()
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ChatApp(root)
+    root.mainloop()
